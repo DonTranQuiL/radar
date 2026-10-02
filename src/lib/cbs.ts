@@ -209,6 +209,28 @@ export async function loadLocalTotals(dataset: DatasetId, period: string, gm: st
     .filter((row) => row.code.startsWith("BU") || row.code.startsWith("WK"));
 }
 
+export async function loadLocalDetail(dataset: DatasetId, period: string, code: string) {
+  const spec = specOf(dataset);
+  const [list, rows] = await Promise.all([
+    odata(spec.local, spec.topic, { $select: "Key,Title" }) as Promise<CodeRow[]>,
+    odata(spec.local, "TypedDataSet", {
+      $select: `${spec.topic},${spec.measure}`,
+      $filter: `Perioden eq ${quote(period)} and substringof(${quote(code)},WijkenEnBuurten)`,
+    }),
+  ]);
+  const titles = Object.fromEntries(list.map((row) => [row.Key.trim(), row.Title]));
+  return rows
+    .map((row) => {
+      const topic = String(row[spec.topic] ?? "").trim();
+      return {
+        code: topic,
+        label: titles[topic] ?? topic,
+        value: asCount(row[spec.measure]),
+      };
+    })
+    .sort((a, b) => (b.value ?? -1) - (a.value ?? -1));
+}
+
 type Geo = { type: "Polygon"; coordinates: number[][][] } | { type: "MultiPolygon"; coordinates: number[][][][] };
 
 export async function loadBuurten(gm: string, bbox: [number, number, number, number]) {

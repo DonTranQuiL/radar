@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Crosshair, Pin, Search } from "lucide-react";
 import { NlMap, type GemeenteFeature } from "@/components/nl-map";
@@ -7,6 +7,7 @@ import {
   loadBornAbroad,
   loadBuurten,
   loadDetail,
+  loadLocalDetail,
   loadLocalTotals,
   loadMeta,
   loadOverview,
@@ -93,6 +94,9 @@ export function RadarBoard() {
   const [localFeatures, setLocalFeatures] = useState<GemeenteFeature[]>([]);
   const [localValues, setLocalValues] = useState<Area[]>([]);
   const [pickedLocal, setPickedLocal] = useState<string | null>(null);
+  const [localCategories, setLocalCategories] = useState<Category[]>([]);
+  const [localDetailState, setLocalDetailState] = useState<"idle" | "loading" | "ready">("idle");
+  const hoodListRef = useRef<HTMLUListElement>(null);
 
   const byCode = useMemo(() => new Map(features.map((feature) => [feature.properties.code, feature.properties.name])), [features]);
   const values = useMemo(() => new Map(areas.map((area) => [area.code, area.value])), [areas]);
@@ -216,7 +220,39 @@ export function RadarBoard() {
     setPickedLocal(null);
     setLocalFeatures([]);
     setLocalValues([]);
+    setLocalCategories([]);
+    setLocalDetailState("idle");
   }, [selected]);
+
+  useEffect(() => {
+    if (!pickedLocal || !hoodListRef.current) return;
+    hoodListRef.current.querySelector(`[data-code="${pickedLocal}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [pickedLocal, localFeatures]);
+
+  useEffect(() => {
+    if (!localOn || !pickedLocal || !period) {
+      setLocalCategories([]);
+      setLocalDetailState("idle");
+      return;
+    }
+    let cancelled = false;
+    setLocalDetailState("loading");
+    void loadLocalDetail(dataset, period, pickedLocal)
+      .then((rows) => {
+        if (cancelled) return;
+        setLocalCategories(rows);
+        setLocalDetailState("ready");
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        setLocalCategories([]);
+        setLocalDetailState("ready");
+        setError(cause instanceof Error ? cause.message : "Neighbourhood detail unavailable.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [localOn, pickedLocal, period, dataset]);
 
   useEffect(() => {
     if (!localOn || !selected) return;
@@ -253,8 +289,17 @@ export function RadarBoard() {
   }, [features, query]);
 
   const selectedName = selected ? (byCode.get(selected) ?? selected) : "Select a municipality";
+  const pickedHood = localFeatures.find((feature) => feature.properties.code === pickedLocal);
+  const hoodTotal = pickedLocal ? (localValueMap.get(pickedLocal) ?? null) : null;
+  const showingHood = localOn && pickedHood != null;
   const total = categories.find((row) => row.label.toLowerCase().startsWith("totaal"));
-  const breakdown = categories.filter((row) => row.value != null && !row.label.toLowerCase().startsWith("totaal")).slice(0, 10);
+  const activeCategories = showingHood ? localCategories : categories;
+  const activeTotal = showingHood
+    ? (activeCategories.find((row) => row.label.toLowerCase().startsWith("totaal"))?.value ?? hoodTotal)
+    : total?.value;
+  const breakdown = activeCategories
+    .filter((row) => row.value != null && !row.label.toLowerCase().startsWith("totaal"))
+    .slice(0, 10);
   const ranked = [...areas]
     .filter((area) => area.value != null)
     .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
@@ -478,10 +523,16 @@ export function RadarBoard() {
         <aside className="p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs tracking-widest text-muted">{DATASETS[dataset].label}</p>
-              <h2 className="text-3xl text-fg">{selectedName}</h2>
-              <p className="mt-1 text-4xl text-primary">{total?.value ?? (selected ? (values.get(selected) ?? "—") : "—")}</p>
-              <p className="text-xs text-muted">registered this month</p>
+              <p className="text-xs tracking-widest text-muted">
+                {showingHood ? "NEIGHBOURHOOD" : DATASETS[dataset].label}
+              </p>
+              <h2 className="text-3xl text-fg">{showingHood ? pickedHood.properties.name : selectedName}</h2>
+              <p className="mt-1 text-4xl text-primary">
+                {showingHood ? (activeTotal ?? "—") : (total?.value ?? (selected ? (values.get(selected) ?? "—") : "—"))}
+              </p>
+              <p className="text-xs text-muted">
+                {showingHood ? `in ${selectedName} · registered this month` : "registered this month"}
+              </p>
             </div>
             <button
               type="button"
@@ -496,7 +547,7 @@ export function RadarBoard() {
           {error && <p className="mt-4 rounded-md border border-alert bg-surface px-3 py-2 text-sm text-alert">{error}</p>}
           {selected && votes[selected] && (
             <div className="mt-4">
-              <p className="text-xs tracking-widest text-muted">LARGEST PARTY, TK 2025</p>
+              <p className="text-xs tracking-widest text-muted">LARGEST PARTY, TK 2025{showingHood ? ` · ${selectedName}` : ""}</p>
               <p className="mt-1 text-lg text-fg">
                 <span className="mr-2 inline-block size-3 align-middle" style={{ background: partyFill(votes[selected].winner) }} />
                 {partyShort(votes[selected].winner)}
@@ -514,7 +565,7 @@ export function RadarBoard() {
           )}
           {selected && (
             <div className="mt-4 text-sm">
-              <p className="text-xs tracking-widest text-muted">REGISTERED RESIDENTS, 1 JAN 2026</p>
+              <p className="text-xs tracking-widest text-muted">REGISTERED RESIDENTS, 1 JAN 2026{showingHood ? ` · ${selectedName}` : ""}</p>
               {people ? (
                 <ul className="mt-2 space-y-1">
                   <li className="flex justify-between gap-3">
@@ -550,7 +601,7 @@ export function RadarBoard() {
           {localOn && (
             <div className="mt-4">
               <p className="text-xs tracking-widest text-muted">NEIGHBOURHOODS</p>
-              <ul className="mt-2 max-h-40 space-y-1 overflow-auto">
+              <ul ref={hoodListRef} className="mt-2 max-h-64 space-y-1 overflow-auto">
                 {localFeatures
                   .map((feature) => ({
                     code: feature.properties.code,
@@ -562,8 +613,11 @@ export function RadarBoard() {
                     <li key={row.code}>
                       <button
                         type="button"
+                        data-code={row.code}
                         onClick={() => setPickedLocal(row.code)}
-                        className="flex min-h-11 w-full items-center justify-between rounded-md px-2 text-left text-sm hover:bg-surface"
+                        className={`flex min-h-11 w-full items-center justify-between rounded-md px-2 text-left text-sm ${
+                          row.code === pickedLocal ? "bg-surface text-fg ring-1 ring-primary" : "hover:bg-surface"
+                        }`}
                       >
                         <span>{row.name}</span>
                         <span className="text-primary">{row.value ?? "—"}</span>
@@ -571,10 +625,15 @@ export function RadarBoard() {
                     </li>
                   ))}
               </ul>
+              {!pickedLocal && (
+                <p className="mt-2 text-xs text-muted">Click a neighbourhood. The count and the bars switch to that area.</p>
+              )}
             </div>
           )}
           <div className="mt-6 h-80">
-            {breakdown.length > 0 ? (
+            {showingHood && localDetailState === "loading" ? (
+              <p className="text-sm text-muted">Reading {pickedHood.properties.name}…</p>
+            ) : breakdown.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={breakdown.map((row) => ({ name: shortLabel(row.label), value: row.value }))} layout="vertical" margin={{ left: 8, right: 8 }}>
                   <XAxis type="number" hide />
@@ -587,7 +646,11 @@ export function RadarBoard() {
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              <p className="text-sm text-muted">Click a municipality, or jump to Parkstad, to open the category breakdown.</p>
+              <p className="text-sm text-muted">
+                {showingHood
+                  ? `${pickedHood.properties.name} has no published category split this month. The count above is the neighbourhood total. Small cells are suppressed.`
+                  : "Click a municipality, or jump to Parkstad, to open the category breakdown."}
+              </p>
             )}
           </div>
           <p className="mt-4 text-xs text-muted">
