@@ -11,6 +11,7 @@ import {
   loadLocalTotals,
   loadMeta,
   loadOverview,
+  loadPlaceLeaders,
   loadPlacePeople,
   type DatasetId,
 } from "@/lib/cbs";
@@ -26,6 +27,7 @@ type People = {
   groups: { label: string; value: number | null }[];
 };
 type Category = { code: string; label: string; value: number | null };
+type Leader = { code: string; label: string; value: number };
 type Period = { key: string; title: string };
 type PinScan = {
   code: string;
@@ -96,6 +98,7 @@ export function RadarBoard() {
   const [pickedLocal, setPickedLocal] = useState<string | null>(null);
   const [localCategories, setLocalCategories] = useState<Category[]>([]);
   const [localDetailState, setLocalDetailState] = useState<"idle" | "loading" | "ready">("idle");
+  const [leaders, setLeaders] = useState<Leader[]>([]);
   const hoodListRef = useRef<HTMLUListElement>(null);
 
   const byCode = useMemo(() => new Map(features.map((feature) => [feature.properties.code, feature.properties.name])), [features]);
@@ -304,6 +307,28 @@ export function RadarBoard() {
     .filter((area) => area.value != null)
     .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
     .slice(0, 5);
+  const lowest = [...areas]
+    .filter((area) => area.value != null && area.value > 0)
+    .sort((a, b) => (a.value ?? 0) - (b.value ?? 0))
+    .slice(0, 5);
+  const leaderKey = [...new Set([...ranked, ...lowest].map((area) => area.code))].sort().join(",");
+
+  useEffect(() => {
+    if (!period || !leaderKey) return;
+    let cancelled = false;
+    void loadPlaceLeaders(dataset, period, leaderKey.split(","))
+      .then((rows) => {
+        if (!cancelled) setLeaders(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setLeaders([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataset, period, leaderKey]);
+
+  const topAct = showingHood && localDetailState !== "ready" ? undefined : breakdown[0];
 
   function focusName(name: string) {
     const feature = features.find((item) => item.properties.name === name);
@@ -434,18 +459,46 @@ export function RadarBoard() {
           </div>
           <h2 className="mt-6 text-sm tracking-wide text-muted">HIGHEST THIS MONTH</h2>
           <ol className="mt-2 space-y-1">
-            {ranked.map((area) => (
-              <li key={area.code}>
-                <button
-                  type="button"
-                  onClick={() => setSelected(area.code)}
-                  className="flex min-h-11 w-full items-center justify-between rounded-md px-2 text-left text-sm hover:bg-surface"
-                >
-                  <span>{byCode.get(area.code) ?? area.code}</span>
-                  <span className="text-primary">{area.value}</span>
-                </button>
-              </li>
-            ))}
+            {ranked.map((area) => {
+              const lead = leaders.find((row) => row.code === area.code);
+              return (
+                <li key={area.code}>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(area.code)}
+                    className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-sm hover:bg-surface"
+                  >
+                    <span>
+                      <span className="block">{byCode.get(area.code) ?? area.code}</span>
+                      {lead && <span className="block text-xs text-muted">{shortLabel(lead.label)}</span>}
+                    </span>
+                    <span className="text-primary">{area.value}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+          <h2 className="mt-6 text-sm tracking-wide text-muted">LOWEST THIS MONTH</h2>
+          <p className="mt-1 text-xs text-muted">Smallest published counts. Not a rate per resident, so small places sit here.</p>
+          <ol className="mt-2 space-y-1">
+            {lowest.map((area) => {
+              const lead = leaders.find((row) => row.code === area.code);
+              return (
+                <li key={area.code}>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(area.code)}
+                    className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-sm hover:bg-surface"
+                  >
+                    <span>
+                      <span className="block">{byCode.get(area.code) ?? area.code}</span>
+                      {lead && <span className="block text-xs text-muted">{shortLabel(lead.label)}</span>}
+                    </span>
+                    <span className="text-primary">{area.value}</span>
+                  </button>
+                </li>
+              );
+            })}
           </ol>
           {pins.length > 0 && (
             <>
@@ -533,6 +586,13 @@ export function RadarBoard() {
               <p className="text-xs text-muted">
                 {showingHood ? `in ${selectedName} · registered this month` : "registered this month"}
               </p>
+              {topAct && (
+                <p className="mt-3 text-sm text-fg">
+                  <span className="block text-xs tracking-widest text-muted">MOST REGISTERED HERE</span>
+                  {shortLabel(topAct.label)}
+                  <span className="text-primary"> {topAct.value}</span>
+                </p>
+              )}
             </div>
             <button
               type="button"

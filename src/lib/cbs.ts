@@ -126,6 +126,59 @@ export async function loadDetail(dataset: DatasetId, period: string, code: strin
     .sort((a, b) => (b.value ?? -1) - (a.value ?? -1));
 }
 
+function topicPath(key: string) {
+  return key
+    .trim()
+    .split(".")
+    .filter((part) => part !== "" && part !== "0");
+}
+
+function isParentTopic(parent: string, child: string) {
+  const left = topicPath(parent);
+  const right = topicPath(child);
+  if (left.length === 0 || right.length <= left.length) return false;
+  return left.every((part, index) => right[index] === part);
+}
+
+/** Most specific category with the highest count for each municipality. Roll-ups are skipped when a finer row exists. */
+export async function loadPlaceLeaders(dataset: DatasetId, period: string, codes: string[]) {
+  const unique = [...new Set(codes)].slice(0, 12);
+  if (unique.length === 0) return [];
+  const spec = specOf(dataset);
+  const [list, rows] = await Promise.all([
+    odata(spec.id, spec.topic, { $select: "Key,Title" }) as Promise<CodeRow[]>,
+    odata(spec.id, "TypedDataSet", {
+      $select: `${spec.geo},${spec.topic},${spec.measure}`,
+      $filter: `Perioden eq ${quote(period)} and (${unique.map((code) => `${spec.geo} eq ${quote(code)}`).join(" or ")})`,
+    }),
+  ]);
+  const titles = new Map<string, string>();
+  for (const row of list) {
+    titles.set(row.Key, row.Title);
+    titles.set(row.Key.trim(), row.Title);
+  }
+  const grouped = new Map<string, { code: string; label: string; value: number }[]>();
+  for (const row of rows) {
+    const place = String(row[spec.geo] ?? "").trim();
+    const topic = String(row[spec.topic] ?? "").trim();
+    const label = titles.get(topic) ?? titles.get(String(row[spec.topic] ?? "")) ?? topic;
+    const value = asCount(row[spec.measure]);
+    if (!place || value == null || value <= 0 || label.toLowerCase().startsWith("totaal")) continue;
+    const bucket = grouped.get(place) ?? [];
+    bucket.push({ code: topic, label, value });
+    grouped.set(place, bucket);
+  }
+  const leaders: { code: string; label: string; value: number }[] = [];
+  for (const [place, bucket] of grouped) {
+    const topics = bucket.map((row) => row.code);
+    const leaves = bucket.filter((row) => !topics.some((other) => isParentTopic(row.code, other)));
+    const pool = leaves.length > 0 ? leaves : bucket;
+    const best = [...pool].sort((a, b) => b.value - a.value)[0];
+    if (best) leaders.push({ code: place, label: best.label, value: best.value });
+  }
+  return leaders;
+}
+
 const ORIGIN_GROUPS = [
   ["2012605", "Origin outside the Netherlands"],
   ["H008859", "Outside Europe"],
