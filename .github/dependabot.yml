@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    ignore:
+      # better-auth 1.7 changes the OAuth callback path; auth.grok.me doesn't accept it yet.
+      - dependency-name: "better-auth"
+        versions: [">=1.7.0"]
